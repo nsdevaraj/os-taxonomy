@@ -698,13 +698,7 @@
       updateInsights();
       
       document.getElementById('status-text').textContent = "Visualization ready — click any node";
-      
-      // Show a couple of featured surprising connections hint on first load (demo or real)
-      setTimeout(() => {
-        const pill = document.getElementById('stats-pill');
-        pill.style.display = 'flex';
-        pill.innerHTML = `<span class="text-emerald-300">1590</span> concepts in semantic space`;
-      }, 1400);
+       
     }
 
     function getNodeColor(node) {
@@ -957,7 +951,7 @@
       updateKnownButton(node.id);
       const geminiLink = document.getElementById('gemini-link');
       if (geminiLink) {
-        geminiLink.href = 'https://grok.com/?q=' + encodeURIComponent('Teach me about: ' + (node.name || node.id));
+        geminiLink.href = 'https://grok.com/?q=' + encodeURIComponent('Teach me about: ' + (node.name + ' ' + node.description || node.id));
       }
     }
 
