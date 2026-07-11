@@ -217,7 +217,7 @@
         <div id="graph" class="absolute inset-0"></div>
         
         <!-- Floating help -->
-        <div id="floating-help" class="absolute bottom-4 left-4 glass px-3 py-2 pr-8 rounded-2xl text-xs max-w-[260px] border border-white/10 hidden md:block">
+        <!-- <div id="floating-help" class="absolute bottom-4 left-4 glass px-3 py-2 pr-8 rounded-2xl text-xs max-w-[260px] border border-white/10 hidden md:block">
           <button onclick="closeHelpOverlay()" aria-label="Close help"
                   class="absolute top-1.5 right-1.5 w-5 h-5 rounded-full text-slate-400 hover:text-slate-200 hover:bg-white/10 leading-none">&times;</button>
           <div class="font-semibold text-indigo-300 mb-px">How to explore</div>
@@ -225,7 +225,7 @@
             Drag to rotate • Scroll to zoom • Click nodes to trace learning paths.<br>
             Use the <span class="text-amber-300">Graph pull</span> slider to see how prerequisites warp semantic space.
           </div>
-        </div>
+        </div> -->
       </div>
 
       <!-- Bottom status -->
@@ -278,7 +278,17 @@
         </div>
       </div>
 
-      <div class="p-4 border-t border-white/10 bg-black/20 text-[10px]">
+      <div id="inspector-actions" class="p-4 border-t border-white/10 bg-black/20 text-[10px] space-y-2 hidden">
+        <div class="flex gap-2">
+          <button id="known-btn" onclick="toggleKnown()"
+                  class="flex-1 py-2 rounded-2xl bg-white/5 hover:bg-white/10 text-xs font-medium border border-white/10 transition-colors">
+            Mark as Known
+          </button>
+          <a id="gemini-link" href="#" target="_blank" rel="noopener noreferrer"
+             class="flex-1 py-2 rounded-2xl bg-white/5 hover:bg-white/10 text-xs font-medium border border-white/10 text-center transition-colors text-indigo-300 hover:text-indigo-200">
+            Learn ↗
+          </a>
+        </div>
         <button onclick="clearSelection()" 
                 class="w-full py-2 rounded-2xl bg-white/5 hover:bg-white/10 text-xs font-medium border border-white/10">
           Clear selection
@@ -340,6 +350,7 @@
     let colorMode = 'subject';
     let autoRotate = false;
     let currentFilter = null;
+    let knownTopics = new Set(JSON.parse(localStorage.getItem('os-taxonomy-known') || '[]'));
 
     // Safe wrapper for cameraPosition (defends against timing / CDN load order issues)
     function safeCameraPosition(pos, lookAt, ms) {
@@ -680,6 +691,7 @@
     }
 
     function getNodeColor(node) {
+      if (knownTopics.has(node.id)) return '#4ade80';
       if (colorMode === 'type') return TYPE_COLORS[node.type] || '#64748b';
       if (colorMode === 'age') {
         const age = node.ageRangeStart || 7;
@@ -914,6 +926,14 @@
       );
       
       document.getElementById('status-text').textContent = `Focused on: ${node.name}`;
+
+      // Known button + Gemini link
+      document.getElementById('inspector-actions').classList.remove('hidden');
+      updateKnownButton(node.id);
+      const geminiLink = document.getElementById('gemini-link');
+      if (geminiLink) {
+        geminiLink.href = 'https://grok.com/?q=' + encodeURIComponent('Teach me about: ' + (node.name || node.id));
+      }
     }
 
     function updateInspectorLists(node, prereqIds, unlockIds) {
@@ -960,6 +980,10 @@
       document.getElementById('inspector-prereqs').innerHTML = '';
       document.getElementById('inspector-unlocks').innerHTML = '';
       document.getElementById('inspector-meta').innerHTML = '';
+      document.getElementById('inspector-actions').classList.add('hidden');
+      updateKnownButton(null);
+      const geminiLink = document.getElementById('gemini-link');
+      if (geminiLink) geminiLink.href = '#';
       
       if (Graph && typeof Graph.nodeColor === 'function') {
         Graph.nodeColor(getNodeColor)
@@ -1054,6 +1078,36 @@
       if (helpEl) helpEl.classList.add('hidden');
     }
 
+    function saveKnownTopics() {
+      localStorage.setItem('os-taxonomy-known', JSON.stringify([...knownTopics]));
+    }
+
+    function updateKnownButton(nodeId) {
+      const btn = document.getElementById('known-btn');
+      if (!btn) return;
+      const isKnown = nodeId && knownTopics.has(nodeId);
+      btn.textContent = isKnown ? '✓ Known' : 'Mark as Known';
+      btn.className = btn.className
+        .replace(/bg-emerald-500\/20|border-emerald-500\/40|text-emerald-300|bg-white\/5|border-white\/10/g, '').trim();
+      if (isKnown) {
+        btn.classList.add('bg-emerald-500/20', 'border-emerald-500/40', 'text-emerald-300');
+      } else {
+        btn.classList.add('bg-white/5', 'border-white/10');
+      }
+    }
+
+    function toggleKnown() {
+      if (!selectedNode) return;
+      if (knownTopics.has(selectedNode.id)) {
+        knownTopics.delete(selectedNode.id);
+      } else {
+        knownTopics.add(selectedNode.id);
+      }
+      saveKnownTopics();
+      updateKnownButton(selectedNode.id);
+      if (Graph && typeof Graph.nodeColor === 'function') Graph.nodeColor(getNodeColor);
+    }
+
     function toggleAutoRotate() {
       autoRotate = !autoRotate;
       const label = document.getElementById('rotate-label');
@@ -1139,7 +1193,9 @@
     }
 
     // Boot
-    window.onload = bootstrap;
+    window.onload = function() {
+      bootstrap(); 
+    };
   </script>
 </body>
 </html>
