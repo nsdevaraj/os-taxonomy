@@ -9,6 +9,7 @@
   "scripts": {
     "validate": "node scripts/validate.mjs",
     "generate-viz": "bash scripts/generate-viz.sh",
+    "generate-viz-graph": "bash scripts/container-generate-viz-graph.sh",
     "serve-viz": "cd generated && python3 -m http.server 8080"
   }
 }
