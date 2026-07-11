@@ -30,7 +30,10 @@ container build -t marble-taxonomy-embeddings .
 
 echo ""
 echo "→ Running generation pipeline inside container..."
-container run --rm -v "$GENERATED_DIR":/app/generated marble-taxonomy-embeddings
+container run --rm \
+  -v "$ROOT_DIR/data":/data:ro \
+  -v "$GENERATED_DIR":/app/generated \
+  marble-taxonomy-embeddings
 
 echo ""
 echo "============================================================"
