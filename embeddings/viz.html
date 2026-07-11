@@ -10,6 +10,7 @@
     It bundles its own Three.js internally — do NOT load a separate three.js script.
   -->
   <script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1/dist/3d-force-graph.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
     
@@ -87,7 +88,8 @@
 <body class="bg-[#0a0a0f] text-slate-200">
   <div class="flex h-screen overflow-hidden">
     <!-- Sidebar -->
-    <div class="w-80 flex-shrink-0 border-r border-white/10 bg-[#111117] flex flex-col">
+    <div id="left-panel" class="w-80 flex-shrink-0 border-r border-white/10 bg-[#111117] flex flex-col"
+         style="transition: width 0.22s ease, min-width 0.22s ease, border 0.22s ease; overflow: hidden; min-width: 320px;">
       <!-- Header -->
       <div class="p-5 border-b border-white/10">
         <div class="flex items-center gap-x-3">
@@ -189,18 +191,29 @@
     <!-- Main visualization -->
     <div class="flex-1 flex flex-col min-w-0">
       <!-- Top bar -->
-      <div class="h-14 border-b border-white/10 px-5 flex items-center justify-between bg-[#111117]">
-        <div class="flex items-center gap-x-4">
-          <div>
-            <span class="font-semibold tracking-tight">Semantic × Prerequisite Space</span>
-            <span class="ml-2 text-xs px-2 py-px rounded bg-white/10 text-white/60 align-middle">3D UMAP + forces</span>
+      <div class="h-14 border-b border-white/10 px-3 flex items-center justify-between bg-[#111117]">
+        <div class="flex items-center gap-x-3">
+          <!-- Sidebar toggle -->
+          <button onclick="toggleLeftPanel()" id="left-panel-toggle"
+                  title="Toggle sidebar"
+                  class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-400 hover:text-white flex-shrink-0">
+            <svg id="panel-toggle-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          </button>
+          <!-- View toggle -->
+          <div class="flex rounded-xl overflow-hidden border border-white/10 text-xs">
+            <button id="view-graph-btn" onclick="showView('graph')"
+                    class="px-3 py-1.5 bg-indigo-500/30 text-indigo-300 font-medium">3D Graph</button>
+            <button id="view-tree-btn" onclick="showView('tree')"
+                    class="px-3 py-1.5 bg-white/5 hover:bg-white/10 font-medium">Tree</button>
           </div>
-          <div id="stats-pill" 
+          <div id="stats-pill"
                class="hidden text-xs px-3 py-1 rounded-3xl bg-white/5 border border-white/10 text-slate-400 font-mono items-center gap-x-1.5">
           </div>
         </div>
         
-        <div class="flex items-center gap-x-3 text-sm">
+        <div id="graph-controls" class="flex items-center gap-x-3 text-sm">
           <button onclick="toggleAutoRotate()" 
                   class="px-3 py-1.5 text-xs rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center gap-x-1.5">
             <span id="rotate-label">Auto-rotate</span>
@@ -215,6 +228,9 @@
       <!-- Graph container -->
       <div class="flex-1 relative" style="background:#0a0a0f">
         <div id="graph" class="absolute inset-0"></div>
+        <div id="tree-view" class="absolute inset-0 hidden" style="background:#0a0a0f;overflow:hidden">
+          <svg id="tree-svg" style="width:100%;height:100%"></svg>
+        </div>
         
         <!-- Floating help -->
         <!-- <div id="floating-help" class="absolute bottom-4 left-4 glass px-3 py-2 pr-8 rounded-2xl text-xs max-w-[260px] border border-white/10 hidden md:block">
@@ -507,6 +523,7 @@
         return;
       }
 
+      // Use actual container dimensions (graph is visible during initGraph)
       Graph = graphInstance
         .width(container.clientWidth)
         .height(container.clientHeight)
@@ -691,7 +708,7 @@
     }
 
     function getNodeColor(node) {
-      if (knownTopics.has(node.id)) return '#4ade80';
+      if (knownTopics.has(node.id)) return '#166534';
       if (colorMode === 'type') return TYPE_COLORS[node.type] || '#64748b';
       if (colorMode === 'age') {
         const age = node.ageRangeStart || 7;
@@ -709,6 +726,10 @@
         if (el) el.classList.toggle('bg-indigo-500/20', m === mode);
       });
       if (Graph && typeof Graph.nodeColor === 'function') Graph.nodeColor(getNodeColor);
+      if (treeInitialized && window._treeState) {
+        window._treeState.g.selectAll('g.tn').select('circle')
+          .attr('fill', d => treeNodeFill(d));
+      }
     }
 
     function buildSubjectLegend() {
@@ -774,6 +795,7 @@
           setTimeout(() => Graph.zoomToFit(600, 40), 350);
         }
       }
+      refreshTree();
     }
 
     function filterByAge(min, max, btnEl) {
@@ -797,6 +819,7 @@
           setTimeout(() => Graph.zoomToFit(600, 40), 350);
         }
       }
+      refreshTree();
     }
 
     function updateForces() {
@@ -862,8 +885,8 @@
     }
 
     function handleNodeClick(node) {
-      if (!Graph || typeof Graph.nodeColor !== 'function') return;
       selectedNode = node;
+      const graphReady = Graph && typeof Graph.nodeColor === 'function';
       
       // Update inspector
       document.getElementById('inspector-name').textContent = node.name || node.id;
@@ -892,39 +915,41 @@
       
       const highlightSet = new Set([node.id, ...prereqIds, ...unlockIds]);
       
-      // Color and particle magic
-      Graph
-        .nodeColor(n => {
-          if (n.id === node.id) return '#f472b6';
-          if (prereqIds.includes(n.id)) return '#f59e0b'; // warm for prereqs
-          if (unlockIds.includes(n.id)) return '#34d399'; // green for unlocks
-          return getNodeColor(n);
-        })
-        .linkDirectionalParticles(link => {
-          const s = typeof link.source === 'object' ? link.source.id : link.source;
-          const t = typeof link.target === 'object' ? link.target.id : link.target;
-          if (prereqIds.includes(t) && s === node.id) return 2;
-          return 0;
-        })
-        .linkColor(link => {
-          const s = typeof link.source === 'object' ? link.source.id : link.source;
-          const t = typeof link.target === 'object' ? link.target.id : link.target;
-          if ((prereqIds.includes(t) && s === node.id) || (s === node.id && unlockIds.includes(t))) {
-            return link.strength === 'hard' ? '#f59e0b' : '#34d399';
-          }
-          return link.color || '#47556933';
-        });
-
       // Update inspector lists
       updateInspectorLists(node, prereqIds, unlockIds);
 
-      // Camera focus
-      safeCameraPosition(
-        { x: node.x * 1.6, y: node.y * 1.6 + 12, z: node.z * 1.6 + 28 },
-        node,
-        900
-      );
-      
+      if (graphReady) {
+        // Color and particle magic
+        Graph
+          .nodeColor(n => {
+            if (n.id === node.id) return '#f472b6';
+            if (prereqIds.includes(n.id)) return '#f59e0b'; // warm for prereqs
+            if (unlockIds.includes(n.id)) return '#34d399'; // green for unlocks
+            return getNodeColor(n);
+          })
+          .linkDirectionalParticles(link => {
+            const s = typeof link.source === 'object' ? link.source.id : link.source;
+            const t = typeof link.target === 'object' ? link.target.id : link.target;
+            if (prereqIds.includes(t) && s === node.id) return 2;
+            return 0;
+          })
+          .linkColor(link => {
+            const s = typeof link.source === 'object' ? link.source.id : link.source;
+            const t = typeof link.target === 'object' ? link.target.id : link.target;
+            if ((prereqIds.includes(t) && s === node.id) || (s === node.id && unlockIds.includes(t))) {
+              return link.strength === 'hard' ? '#f59e0b' : '#34d399';
+            }
+            return link.color || '#47556933';
+          });
+
+        // Camera focus
+        safeCameraPosition(
+          { x: node.x * 1.6, y: node.y * 1.6 + 12, z: node.z * 1.6 + 28 },
+          node,
+          900
+        );
+      }
+
       document.getElementById('status-text').textContent = `Focused on: ${node.name}`;
 
       // Known button + Gemini link
@@ -1106,6 +1131,11 @@
       saveKnownTopics();
       updateKnownButton(selectedNode.id);
       if (Graph && typeof Graph.nodeColor === 'function') Graph.nodeColor(getNodeColor);
+      if (treeInitialized && window._treeState) {
+        window._treeState.g.selectAll('g.tn')
+          .filter(d => d.data.id === selectedNode.id)
+          .select('circle').attr('fill', d => treeNodeFill(d));
+      }
     }
 
     function toggleAutoRotate() {
@@ -1176,7 +1206,7 @@
       
       initGraph();
       setInitialForces();
-      
+
       // Demo hint: highlight one interesting chain after a few seconds if in demo or small data
       setTimeout(() => {
         if (allNodes.length < 300 && Graph) {
@@ -1190,6 +1220,263 @@
       
       // Mark as ready
       console.log('%c[Marble Viz] Jaw-dropping semantic + graph explorer initialized.', 'color:#64748b');
+    }
+
+    // ─── Left panel collapse ──────────────────────────────────────────────────────
+    let leftPanelCollapsed = false;
+
+    function toggleLeftPanel() {
+      leftPanelCollapsed = !leftPanelCollapsed;
+      const panel = document.getElementById('left-panel');
+      const icon  = document.getElementById('panel-toggle-icon');
+      if (leftPanelCollapsed) {
+        panel.style.width    = '0';
+        panel.style.minWidth = '0';
+        panel.style.borderRightWidth = '0';
+        // Flip chevron to point right
+        icon.innerHTML = '<path d="M9 18l6-6-6-6"/>';
+      } else {
+        panel.style.width    = '320px';
+        panel.style.minWidth = '320px';
+        panel.style.borderRightWidth = '';
+        // Chevron points left
+        icon.innerHTML = '<path d="M15 18l-6-6 6-6"/>';
+      }
+      // Resize visualizations after transition
+      setTimeout(() => {
+        if (currentView === 'tree' && treeInitialized && window._treeState) {
+          const r = document.getElementById('tree-view').getBoundingClientRect();
+          window._treeState.svg.attr('width', r.width).attr('height', r.height);
+          fitTree();
+        } else if (currentView !== 'tree' && Graph && typeof Graph.width === 'function') {
+          const c = document.getElementById('graph');
+          Graph.width(c.clientWidth).height(c.clientHeight);
+        }
+      }, 240);
+    }
+
+    // ─── Tree View ─────────────────────────────────────────────────────────
+    let treeInitialized = false;
+    let currentView = 'graph';
+
+    function showView(mode) {
+      currentView = mode;
+      const isTree = mode === 'tree';
+      const graphEl = document.getElementById('graph');
+      // Use visibility (not display:none) for graph to preserve the WebGL context
+      graphEl.style.visibility    = isTree ? 'hidden' : '';
+      graphEl.style.pointerEvents = isTree ? 'none'   : '';
+      document.getElementById('tree-view').classList.toggle('hidden', !isTree);
+      const gc = document.getElementById('graph-controls');
+      if (gc) gc.classList.toggle('hidden', isTree);
+      const btnG = document.getElementById('view-graph-btn');
+      const btnT = document.getElementById('view-tree-btn');
+      btnG.classList.toggle('bg-indigo-500/30', !isTree);
+      btnG.classList.toggle('text-indigo-300',  !isTree);
+      btnG.classList.toggle('bg-white/5',  isTree);
+      btnT.classList.toggle('bg-indigo-500/30', isTree);
+      btnT.classList.toggle('text-indigo-300',  isTree);
+      btnT.classList.toggle('bg-white/5', !isTree);
+      if (isTree && !treeInitialized && allNodes.length > 0) {
+        treeInitialized = true;
+        initTree();
+      }
+      // When switching to 3D graph, resize to actual container dimensions
+      if (!isTree && Graph && typeof Graph.width === 'function') {
+        requestAnimationFrame(() => {
+          const c = document.getElementById('graph');
+          Graph.width(c.clientWidth).height(c.clientHeight);
+          if (typeof Graph.zoomToFit === 'function') setTimeout(() => Graph.zoomToFit(600, 30), 200);
+        });
+        document.getElementById('status-text').textContent = 'Visualization ready — click any node';
+      } else if (!isTree && !Graph) {
+        document.getElementById('status-text').innerHTML = '<span class="text-red-400">3D graph unavailable — WebGL may not be supported in this browser.</span>';
+      }
+    }
+
+    function buildTreeData() {
+      const filteredNodes = allNodes.filter(n => {
+        if (activeSubjectFilters.size > 0 && !activeSubjectFilters.has(n.subject)) return false;
+        if (currentFilter && currentFilter.type === 'age') {
+          const start = n.ageRangeStart || 0;
+          const end   = n.ageRangeEnd   || 99;
+          if (start > currentFilter.max || end < currentFilter.min) return false;
+        }
+        return true;
+      });
+      const bySubject = {};
+      filteredNodes.forEach(n => {
+        const subj = n.subject || 'Unknown';
+        const dom  = n.domain  || 'General';
+        if (!bySubject[subj])      bySubject[subj] = {};
+        if (!bySubject[subj][dom]) bySubject[subj][dom] = [];
+        bySubject[subj][dom].push(n);
+      });
+      return {
+        name: 'Marble', id: '__root__',
+        children: Object.entries(bySubject).sort(([a],[b]) => a.localeCompare(b)).map(([subj, doms]) => ({
+          name: subj, id: `__s__${subj}`, subject: subj, isSubject: true,
+          topicCount: Object.values(doms).flat().length,
+          children: Object.entries(doms).sort(([a],[b]) => a.localeCompare(b)).map(([dom, topics]) => ({
+            name: dom, id: `__d__${subj}__${dom}`, subject: subj, isDomain: true,
+            topicCount: topics.length,
+            children: topics.sort((a,b) => (a.name||'').localeCompare(b.name||'')).map(t => ({...t, isLeaf: true}))
+          }))
+        }))
+      };
+    }
+
+    function treeNodeFill(d) {
+      if (d.data.id === '__root__') return '#a5b4fc';
+      if (d.data.isLeaf && knownTopics.has(d.data.id)) return '#166534';
+      if (d.data.isLeaf) {
+        if (colorMode === 'type') return (TYPE_COLORS[d.data.type] || '#64748b') + '88';
+        if (colorMode === 'age') {
+          const age = d.data.ageRangeStart || 7;
+          const t = Math.max(0, Math.min(1, (age - 4) / 9));
+          return `hsla(${190 + t * 70}, 78%, ${58 + t * 12}%, 0.53)`;
+        }
+        return (SUBJECT_COLORS[d.data.subject] || '#64748b') + '88';
+      }
+      return SUBJECT_COLORS[d.data.subject] || '#64748b';
+    }
+
+    function treeNodeText(d) {
+      if (d.data.id === '__root__') return d.data.name;
+      if (d.data.isSubject) return `${d.data.name}  (${d.data.topicCount})`;
+      if (d.data.isDomain)  return `${d.data.name}  ·  ${d.data.topicCount}`;
+      const n = d.data.name || '';
+      return n.length > 38 ? n.slice(0, 36) + '\u2026' : n;
+    }
+
+    function refreshTree() {
+      if (!treeInitialized || !window._treeState) return;
+      const rawData = buildTreeData();
+      const root = d3.hierarchy(rawData);
+      root.children.forEach(s => {
+        s.children.forEach(d => { d._children = d.children; d.children = null; });
+      });
+      window._treeState.root = root;
+      drawTree(root);
+    }
+
+    function fitTree() {
+      const ts = window._treeState;
+      if (!ts) return;
+      const bounds = ts.g.node().getBBox();
+      if (!bounds.width || !bounds.height) return;
+      const { width: cW, height: cH } = document.getElementById('tree-view').getBoundingClientRect();
+      if (!cW || !cH) return;
+      const pad = 48;
+      const scale = Math.min(0.92 * cW / (bounds.width + pad * 2), 0.92 * cH / (bounds.height + pad * 2), 1.4);
+      const tx = cW / 2 - scale * (bounds.x + bounds.width  / 2);
+      const ty = cH / 2 - scale * (bounds.y + bounds.height / 2);
+      ts.svg.transition().duration(450).call(ts.zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    }
+
+    function initTree() {
+      const container = document.getElementById('tree-view');
+      const rect = container.getBoundingClientRect();
+      const W = rect.width  || window.innerWidth  * 0.55;
+      const H = rect.height || window.innerHeight;
+
+      const svg = d3.select('#tree-svg')
+        .attr('width', W).attr('height', H)
+        .style('cursor', 'grab');
+      svg.selectAll('*').remove();
+
+      const g = svg.append('g');
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.04, 4])
+        .on('zoom', e => g.attr('transform', e.transform));
+      svg.call(zoom).call(zoom.transform, d3.zoomIdentity.translate(60, H / 2));
+
+      const rawData = buildTreeData();
+      const root = d3.hierarchy(rawData);
+      // Start with domains collapsed
+      root.children.forEach(s => {
+        s.children.forEach(d => { d._children = d.children; d.children = null; });
+      });
+
+      window._treeState = { root, g, svg, zoom };
+      drawTree(root);
+      setTimeout(fitTree, 400);
+
+      window.addEventListener('resize', () => {
+        if (currentView !== 'tree') return;
+        const r = container.getBoundingClientRect();
+        svg.attr('width', r.width).attr('height', r.height);
+      });
+    }
+
+    function drawTree(src) {
+      const { root, g } = window._treeState;
+      const dur = 320;
+      const diag = d3.linkHorizontal().x(d => d.y).y(d => d.x);
+      d3.tree().nodeSize([22, 220])(root);
+
+      const ox = src.x, oy = src.y;
+      const originPath = diag({ source: {x: ox, y: oy}, target: {x: ox, y: oy} });
+
+      // — Links —
+      const lSel = g.selectAll('path.tl').data(root.links(), d => d.target.data.id);
+
+      lSel.enter().insert('path', 'g')
+          .attr('class', 'tl').attr('fill', 'none')
+          .attr('stroke-width', d => d.target.data.isLeaf ? 0.5 : 1)
+          .attr('stroke', d => (SUBJECT_COLORS[d.target.data.subject]||'#475569') + (d.target.data.isLeaf ? '28' : '55'))
+          .attr('d', originPath)
+        .merge(lSel)
+          .transition().duration(dur)
+          .attr('d', diag)
+          .attr('stroke', d => (SUBJECT_COLORS[d.target.data.subject]||'#475569') + (d.target.data.isLeaf ? '28' : '55'));
+
+      lSel.exit().transition().duration(dur).attr('d', originPath).remove();
+
+      // — Nodes —
+      const nSel = g.selectAll('g.tn').data(root.descendants(), d => d.data.id);
+
+      const nEnt = nSel.enter().append('g')
+          .attr('class', 'tn')
+          .attr('transform', `translate(${oy},${ox})`)
+          .style('cursor', 'pointer')
+          .on('click', (evt, d) => {
+            evt.stopPropagation();
+            if (d.data.isLeaf) {
+              const node = nodeMap.get(d.data.id) || d.data;
+              handleNodeClick(node);
+              return;
+            }
+            if (d.children) { d._children = d.children; d.children = null; }
+            else             { d.children = d._children; d._children = null; }
+            drawTree(d);
+            setTimeout(fitTree, dur + 80);
+          });
+
+      nEnt.append('circle').attr('r', 0)
+          .attr('fill',   d => treeNodeFill(d))
+          .attr('stroke', d => d._children ? '#f59e0b' : 'none')
+          .attr('stroke-width', 2);
+
+      nEnt.append('text')
+          .attr('dy', '0.33em').attr('x', 10)
+          .style('pointer-events', 'none')
+          .attr('fill', d => d.data.isSubject ? '#e2e8f0' : d.data.isDomain ? '#cbd5e1' : '#94a3b8')
+          .style('font-size',   d => d.data.isSubject ? '12px' : d.data.isDomain ? '11px' : '10px')
+          .style('font-weight', d => d.data.isSubject ? '600'  : d.data.isDomain ? '500'  : '400')
+          .text(d => treeNodeText(d));
+
+      const nAll = nEnt.merge(nSel);
+      nAll.transition().duration(dur).attr('transform', d => `translate(${d.y},${d.x})`);
+      nAll.select('circle').transition().duration(dur)
+          .attr('r',      d => d.data.id === '__root__' ? 9 : d.data.isSubject ? 7 : d.data.isDomain ? 5 : 3)
+          .attr('fill',   d => treeNodeFill(d))
+          .attr('stroke', d => d._children ? '#f59e0b' : 'none');
+      nAll.select('text').text(d => treeNodeText(d));
+
+      nSel.exit().transition().duration(dur)
+          .attr('transform', `translate(${oy},${ox})`).remove();
     }
 
     // Boot
