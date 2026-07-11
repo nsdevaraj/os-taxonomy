@@ -59,12 +59,42 @@ def load_data(data_dir: Path) -> tuple[List[Dict], List[Dict]]:
     return topics, dependencies
 
 
-def build_embedding_text(topic: Dict[str, Any]) -> str:
+def load_crosswalk(crosswalk_path: Path) -> Dict[str, Any]:
+    """
+    Load the ACARA v9 F-6 crosswalk and return a lookup dict keyed by topic ID.
+
+    Returns a dict with two entries:
+      - "map":  topic_id → {status, matches: [{code, confidence, score}], ...}
+      - "acara": acara_code → {d, strand, subject, years}
+    Returns empty dicts if the file is not found (crosswalk is optional).
+    """
+    if not crosswalk_path.exists():
+        console.log(f"[yellow]Crosswalk not found at {crosswalk_path} — skipping ACARA enrichment[/yellow]")
+        return {"map": {}, "acara": {}}
+
+    with open(crosswalk_path) as f:
+        doc = json.load(f)
+
+    topic_map = doc.get("map", {})
+    acara_codes = doc.get("acara", {})
+    mapped_count = sum(1 for v in topic_map.values() if v.get("status") == "mapped")
+    console.log(
+        f"[green]Loaded[/green] crosswalk: {len(topic_map)} topics, "
+        f"{mapped_count} mapped to ACARA codes ({crosswalk_path.name})"
+    )
+    return {"map": topic_map, "acara": acara_codes}
+
+
+def build_embedding_text(topic: Dict[str, Any], acara_context: Dict[str, Any] = None) -> str:
     """
     First-principles text construction for a learning micro-topic.
 
     Goal: Capture both the conceptual essence and the "what mastery looks like"
     signal so that embeddings reflect pedagogical ideas, not just surface words.
+
+    If acara_context is provided, high-confidence ACARA curriculum descriptions
+    are appended to further anchor the concept in the official curriculum space.
+    acara_context = {"map": {...}, "acara": {...}}
     """
     subject = topic.get("subject", "")
     domain = topic.get("domain") or ""
@@ -87,6 +117,24 @@ def build_embedding_text(topic: Dict[str, Any]) -> str:
         evidence_str = " | ".join(e.strip() for e in evidence if e and e.strip())
         text += f" Evidence of mastery: {evidence_str}."
 
+    # Append ACARA curriculum descriptions for semantically mapped topics.
+    # Only include high/medium-confidence matches to avoid noise.
+    if acara_context:
+        topic_id = topic.get("id", "")
+        mapping = acara_context["map"].get(topic_id, {})
+        acara_lookup = acara_context["acara"]
+        if mapping.get("status") == "mapped":
+            descs = []
+            for m in mapping.get("matches", []):
+                if m.get("confidence") in ("high", "medium"):
+                    code = m["code"]
+                    acara_entry = acara_lookup.get(code, {})
+                    d = acara_entry.get("d", "")
+                    if d:
+                        descs.append(d)
+            if descs:
+                text += " Curriculum: " + " | ".join(descs) + "."
+
     return text.strip()
 
 
@@ -94,13 +142,14 @@ def compute_embeddings(
     topics: List[Dict[str, Any]],
     model_name: str,
     batch_size: int = 64,
+    acara_context: Dict[str, Any] = None,
 ) -> np.ndarray:
     """Compute dense embeddings with progress and determinism."""
     console.log(f"[bold]Loading embedding model:[/bold] {model_name}")
     # device="cpu" explicit for reproducibility in container
     model = SentenceTransformer(model_name, device="cpu")
 
-    texts = [build_embedding_text(t) for t in topics]
+    texts = [build_embedding_text(t, acara_context) for t in topics]
 
     embeddings_list: List[np.ndarray] = []
     with Progress(
@@ -134,6 +183,7 @@ def persist_to_chroma(
     embeddings: np.ndarray,
     chroma_dir: Path,
     collection_name: str = "marble-taxonomy-topics",
+    acara_context: Dict[str, Any] = None,
 ) -> None:
     """Persist vectors + rich metadata into a local Chroma DB."""
     chroma_dir.mkdir(parents=True, exist_ok=True)
@@ -169,8 +219,18 @@ def persist_to_chroma(
             "ageRangeEnd": t.get("ageRangeEnd"),
             "centrality": t.get("centrality"),
         }
+        # Enrich with ACARA crosswalk metadata when available
+        if acara_context:
+            mapping = acara_context["map"].get(t["id"], {})
+            meta["acara_status"] = mapping.get("status", "")
+            top_codes = [
+                m["code"]
+                for m in mapping.get("matches", [])
+                if m.get("confidence") in ("high", "medium")
+            ]
+            meta["acara_codes"] = ",".join(top_codes) if top_codes else ""
         metadatas.append(meta)
-        documents.append(build_embedding_text(t))
+        documents.append(build_embedding_text(t, acara_context))
 
     collection.add(
         ids=ids,
@@ -223,6 +283,7 @@ def build_artifacts(
     model_name: str,
     embedding_dim: int,
     umap_params: Dict[str, Any],
+    acara_context: Dict[str, Any] = None,
 ) -> None:
     """Write the clean, versioned artifacts consumed by the visualization."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -251,6 +312,13 @@ def build_artifacts(
             "x2": float(coords2d[i, 0]),
             "y2": float(coords2d[i, 1]),
         }
+        if acara_context:
+            mapping = acara_context["map"].get(t["id"], {})
+            node["acara_status"] = mapping.get("status", "")
+            node["acara_matches"] = [
+                {"code": m["code"], "confidence": m["confidence"], "score": m["score"]}
+                for m in mapping.get("matches", [])
+            ]
         nodes.append(node)
 
     # Slim links (preserve the pedagogical graph)
@@ -341,6 +409,12 @@ def main():
     parser.add_argument("--model", type=str, default=os.environ.get("EMBEDDING_MODEL", DEFAULT_MODEL))
     parser.add_argument("--n-neighbors", type=int, default=20)
     parser.add_argument("--min-dist", type=float, default=0.08)
+    parser.add_argument(
+        "--crosswalk",
+        type=Path,
+        default=None,
+        help="Path to ACARA crosswalk JSON (default: <data-dir>/../crosswalks/acara-v9-f6-candidates.json)",
+    )
     args = parser.parse_args()
 
     start = time.time()
@@ -350,11 +424,15 @@ def main():
     output_dir = args.output_dir
     chroma_dir = output_dir / "chroma"
 
+    # Resolve crosswalk path: explicit arg → sibling crosswalks/ dir → skip
+    crosswalk_path = args.crosswalk or (data_dir.parent / "crosswalks" / "acara-v9-f6-candidates.json")
+    acara_context = load_crosswalk(crosswalk_path)
+
     topics, dependencies = load_data(data_dir)
 
-    embeddings, embedding_dim = compute_embeddings(topics, args.model)
+    embeddings, embedding_dim = compute_embeddings(topics, args.model, acara_context=acara_context)
 
-    persist_to_chroma(topics, embeddings, chroma_dir)
+    persist_to_chroma(topics, embeddings, chroma_dir, acara_context=acara_context)
 
     coords = compute_umap_layouts(
         embeddings,
@@ -370,6 +448,7 @@ def main():
         args.model,
         embedding_dim,
         {"n_neighbors": args.n_neighbors, "min_dist": args.min_dist},
+        acara_context=acara_context,
     )
 
     sanity_check(embeddings, topics)
