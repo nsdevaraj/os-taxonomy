@@ -13,3 +13,4 @@ package-lock.json
 # Do not ignore the source viz template
 !embeddings/viz.html
 
+output/

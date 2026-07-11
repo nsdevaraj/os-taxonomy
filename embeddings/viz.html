@@ -111,8 +111,10 @@
           <input id="search" 
                  type="text" 
                  placeholder="Search concepts (e.g. fraction, camouflage, sentence)..."
+                 autocomplete="off"
                  class="w-full bg-black/40 border border-white/15 focus:border-indigo-400/60 rounded-2xl py-2.5 pl-4 pr-10 text-sm placeholder:text-slate-500 focus:outline-none">
           <div class="absolute right-3.5 top-2.5 text-slate-500 text-xs">⌘K</div>
+          <div id="search-results" class="hidden absolute z-30 left-0 right-0 mt-1 max-h-72 overflow-auto rounded-xl border border-white/10 bg-[#15151d] shadow-2xl"></div>
         </div>
       </div>
 
@@ -170,8 +172,8 @@
         <div class="mt-4">
           <div class="control-label mb-2 px-1">Quick filters</div>
           <div class="flex flex-wrap gap-2 text-xs">
-            <button onclick="filterByAge(4,7)" class="px-2.5 py-1 rounded-full bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[10px]">Ages 4–7</button>
-            <button onclick="filterByAge(8,11)" class="px-2.5 py-1 rounded-full bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[10px]">Ages 8–11</button>
+            <button onclick="filterByAge(4,7,this)" class="age-filter px-2.5 py-1 rounded-full bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[10px]">Ages 4–7</button>
+            <button onclick="filterByAge(8,11,this)" class="age-filter px-2.5 py-1 rounded-full bg-emerald-900/30 text-emerald-300 border border-emerald-700/40 text-[10px]">Ages 8–11</button>
             <button onclick="clearFilters()" class="px-2.5 py-1 rounded-full bg-white/5 text-slate-400 border border-white/10 text-[10px]">Clear</button>
           </div>
         </div>
@@ -215,7 +217,9 @@
         <div id="graph" class="absolute inset-0"></div>
         
         <!-- Floating help -->
-        <div class="absolute bottom-4 left-4 glass px-3 py-2 rounded-2xl text-xs max-w-[260px] border border-white/10 hidden md:block">
+        <div id="floating-help" class="absolute bottom-4 left-4 glass px-3 py-2 pr-8 rounded-2xl text-xs max-w-[260px] border border-white/10 hidden md:block">
+          <button onclick="closeHelpOverlay()" aria-label="Close help"
+                  class="absolute top-1.5 right-1.5 w-5 h-5 rounded-full text-slate-400 hover:text-slate-200 hover:bg-white/10 leading-none">&times;</button>
           <div class="font-semibold text-indigo-300 mb-px">How to explore</div>
           <div class="text-slate-400 leading-tight">
             Drag to rotate • Scroll to zoom • Click nodes to trace learning paths.<br>
@@ -287,7 +291,7 @@
   <div class="fixed bottom-4 right-4 glass px-4 py-3 rounded-3xl border border-white/10 text-xs shadow-2xl max-w-xs hidden lg:block" id="insights-panel">
     <div class="flex items-center justify-between mb-2">
       <div class="font-semibold text-xs">Insights</div>
-      <button onclick="document.getElementById('insights-panel').classList.toggle('hidden')" class="text-slate-400 hover:text-white">×</button>
+      <button aria-label="Close insights" onclick="document.getElementById('insights-panel').style.display='none'" class="text-slate-400 hover:text-white text-base leading-none px-2 -mr-1 -my-1">×</button>
     </div>
     <div id="insights-content" class="space-y-1 text-[10px] leading-tight text-slate-400"></div>
   </div>
@@ -531,17 +535,77 @@
 
       // Search
       const searchInput = document.getElementById('search');
+      const searchResults = document.getElementById('search-results');
+      let searchMatches = [];
+
+      function focusNodeById(id) {
+        const graphNodes = (Graph && typeof Graph.graphData === 'function') ? Graph.graphData().nodes : [];
+        const live = graphNodes.find(n => n.id === id) || nodeMap.get(id);
+        if (live) handleNodeClick(live);
+      }
+
+      function renderSearchResults(matches, q) {
+        if (!matches.length) {
+          searchResults.innerHTML = '<div class="px-3 py-2 text-xs text-slate-500">No matching concepts</div>';
+          searchResults.classList.remove('hidden');
+          return;
+        }
+        searchResults.innerHTML =
+          `<div class="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 border-b border-white/5">${matches.length} match${matches.length === 1 ? '' : 'es'}</div>` +
+          matches.slice(0, 40).map(n => `
+            <button data-id="${n.id}" class="search-result w-full text-left px-3 py-2 hover:bg-white/10 border-b border-white/5">
+              <div class="text-[13px] text-slate-200">${n.name}</div>
+              <div class="text-[10px] text-slate-500">${n.subject || ''}${n.domain ? ' · ' + n.domain : ''} · Age ${n.ageRangeStart ?? '?'}–${n.ageRangeEnd ?? '?'}</div>
+            </button>`).join('');
+        searchResults.classList.remove('hidden');
+        searchResults.querySelectorAll('.search-result').forEach(btn => {
+          btn.addEventListener('click', () => {
+            focusNodeById(btn.dataset.id);
+            searchResults.classList.add('hidden');
+          });
+        });
+      }
+
       searchInput.addEventListener('input', (e) => {
         const q = e.target.value.toLowerCase().trim();
         if (!q) {
           highlightNodes([]);
+          searchResults.classList.add('hidden');
+          searchMatches = [];
           return;
         }
-        const matches = allNodes.filter(n => 
-          (n.name && n.name.toLowerCase().includes(q)) || 
-          (n.domain && n.domain.toLowerCase().includes(q))
-        ).map(n => n.id);
-        highlightNodes(matches, true);
+        searchMatches = allNodes.filter(n =>
+          (n.name && n.name.toLowerCase().includes(q)) ||
+          (n.subject && n.subject.toLowerCase().includes(q)) ||
+          (n.domain && n.domain.toLowerCase().includes(q)) ||
+          (n.description && n.description.toLowerCase().includes(q))
+        );
+        // Rank name matches first, then by name length (closer matches first)
+        searchMatches.sort((a, b) => {
+          const aName = (a.name || '').toLowerCase();
+          const bName = (b.name || '').toLowerCase();
+          const an = aName.includes(q) ? 0 : 1;
+          const bn = bName.includes(q) ? 0 : 1;
+          if (an !== bn) return an - bn;
+          return aName.length - bName.length;
+        });
+        highlightNodes(searchMatches.map(n => n.id), true);
+        renderSearchResults(searchMatches, q);
+      });
+
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && searchMatches.length) {
+          e.preventDefault();
+          focusNodeById(searchMatches[0].id);
+          searchResults.classList.add('hidden');
+        }
+      });
+
+      // Hide results when clicking outside the search area
+      document.addEventListener('click', (e) => {
+        if (e.target !== searchInput && !searchResults.contains(e.target)) {
+          searchResults.classList.add('hidden');
+        }
       });
 
       // Initial render
@@ -693,11 +757,19 @@
       
       if (Graph && typeof Graph.graphData === 'function') {
         Graph.graphData({ nodes: newNodes, links: newLinks });
+        // Refit the camera to the visible subset so the filter change is obvious
+        if (typeof Graph.zoomToFit === 'function') {
+          setTimeout(() => Graph.zoomToFit(600, 40), 350);
+        }
       }
     }
 
-    function filterByAge(min, max) {
+    function filterByAge(min, max, btnEl) {
       currentFilter = { type: 'age', min, max };
+      // Highlight the active age filter button
+      document.querySelectorAll('.age-filter').forEach(b =>
+        b.classList.remove('ring-2', 'ring-emerald-400', 'bg-emerald-500/40'));
+      if (btnEl) btnEl.classList.add('ring-2', 'ring-emerald-400', 'bg-emerald-500/40');
       applyFilters();
     }
     
@@ -705,8 +777,13 @@
       activeSubjectFilters.clear();
       currentFilter = null;
       document.querySelectorAll('.subject-pill').forEach(p => p.classList.remove('active', 'bg-white/10'));
+      document.querySelectorAll('.age-filter').forEach(b =>
+        b.classList.remove('ring-2', 'ring-emerald-400', 'bg-emerald-500/40'));
       if (Graph && typeof Graph.graphData === 'function') {
         Graph.graphData(graphData);
+        if (typeof Graph.zoomToFit === 'function') {
+          setTimeout(() => Graph.zoomToFit(600, 40), 350);
+        }
       }
     }
 
@@ -783,11 +860,19 @@
         ${node.domain ? '· ' + node.domain : ''} 
         · Age ${node.ageRangeStart || '?'}–${node.ageRangeEnd || '?'}
       `;
-      document.getElementById('inspector-desc').textContent = 'Full description would appear here for real data. (Loaded from generated JSON in production run.)';
+      document.getElementById('inspector-desc').textContent =
+        node.description || 'No description available for this concept.';
       
-      // Evidence (placeholder unless we embed more data)
+      // Evidence of mastery — real data when present
       const evUl = document.getElementById('inspector-evidence');
-      evUl.innerHTML = '<li class="text-slate-400">• Evidence details loaded from source taxonomy in full pipeline</li>';
+      const evidence = Array.isArray(node.evidence) ? node.evidence : [];
+      if (evidence.length) {
+        evUl.innerHTML = evidence
+          .map(e => `<li class="flex gap-x-1.5"><span class="text-emerald-400">•</span><span>${e}</span></li>`)
+          .join('');
+      } else {
+        evUl.innerHTML = '<li class="text-slate-400">• No mastery evidence listed for this concept</li>';
+      }
       
       // Highlight the concept + prereqs
       const { ids: prereqIds } = getAncestorChain(node.id);
@@ -962,6 +1047,11 @@
         <div class="text-emerald-300">UMAP preserves local semantic neighborhoods</div>
         <div>Drag the <span class="font-semibold text-white">Graph pull</span> slider to watch pedagogy reshape meaning space.</div>
       `;
+    }
+
+    function closeHelpOverlay() {
+      const helpEl = document.getElementById('floating-help');
+      if (helpEl) helpEl.classList.add('hidden');
     }
 
     function toggleAutoRotate() {

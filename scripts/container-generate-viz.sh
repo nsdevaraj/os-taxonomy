@@ -32,7 +32,7 @@ echo ""
 echo "→ Running generation pipeline inside container..."
 container run --rm \
   -v "$ROOT_DIR/data":/data:ro \
-  -v "$GENERATED_DIR":/app/generated \
+  -v "$GENERATED_DIR":/output \
   marble-taxonomy-embeddings
 
 echo ""
